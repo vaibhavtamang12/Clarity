@@ -56,3 +56,6 @@ revision: ## Create a new migration: make revision MSG="describe change"
 
 test-integration: ## Integration tests (requires: docker compose up -d postgres)
 	$(VENV)/bin/pytest tests/integration -v
+
+experiments-chunking: ## Run Phase 5 chunking experiments (writes docs/chunking-experiments.md)
+	$(VENV)/bin/python scripts/run_chunking_experiments.py
