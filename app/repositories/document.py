@@ -102,6 +102,16 @@ class DocumentVersionRepository(BaseRepository[DocumentVersion]):
             .order_by(DocumentVersion.version_number.desc())
         )
         return result.scalars().all()
+    
+    async def get_latest_for_document(self, document_id: uuid.UUID) -> DocumentVersion | None:
+        """Highest version number regardless of status — used for change detection."""
+        result = await self.session.execute(
+            select(DocumentVersion)
+            .where(DocumentVersion.document_id == document_id)
+            .order_by(DocumentVersion.version_number.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def activate(self, version_id: uuid.UUID) -> DocumentVersion:
         """Transactional version handshake.

@@ -26,6 +26,8 @@ class ErrorCode(StrEnum):
     EMBEDDING_UNAVAILABLE = "EMBEDDING_UNAVAILABLE"
     HTTP_ERROR = "HTTP_ERROR"
     INTERNAL = "INTERNAL"
+    INGESTION_VALIDATION = "INGESTION_VALIDATION"
+
 
 
 class AppError(Exception):
@@ -111,3 +113,9 @@ class LLMUnavailableError(ExternalServiceError):
 class EmbeddingUnavailableError(ExternalServiceError):
     code = ErrorCode.EMBEDDING_UNAVAILABLE
     status_code = 503
+
+class IngestionValidationError(AppError):
+    """Input rejected before any processing (bad type, size, or URL policy)."""
+
+    code = ErrorCode.INGESTION_VALIDATION
+    status_code = 400

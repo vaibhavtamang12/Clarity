@@ -24,6 +24,9 @@ dependencies = [
     "structlog>=24.1",
     "python-multipart>=0.0.9",
     "PyYAML>=6.0.1",
+    "pymupdf>=1.24",          # PDF parsing: text, layout, font metrics (heading heuristics)
+    "python-docx>=1.1",       # DOCX parsing: paragraph styles → heading levels
+    "beautifulsoup4>=4.12"
 ]
 
 [project.optional-dependencies]
@@ -70,6 +73,8 @@ disallow_untyped_defs = true
 no_implicit_optional = true
 check_untyped_defs = true
 plugins = ["pydantic.mypy"]
+module = ["mlflow.*", "sentence_transformers.*", "torch.*", "pymupdf.*", "fitz.*", "docx.*", "bs4.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["mlflow.*", "sentence_transformers.*", "torch.*"]
