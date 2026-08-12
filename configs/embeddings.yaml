@@ -1,0 +1,25 @@
+# Embedding model registry — consumed via app/embeddings/registry.py (ADR-002).
+# `default` must be a key in `models`. Selected at runtime via EMBEDDING__DEFAULT_MODEL.
+default: bge_m3
+
+models:
+  bge_m3:
+    model_id: BAAI/bge-m3
+    dimension: 1024
+    max_tokens: 8192
+    normalize: true
+    query_prefix: ""
+
+  bge_base_en_v1_5:
+    model_id: BAAI/bge-base-en-v1.5
+    dimension: 768
+    max_tokens: 512
+    normalize: true
+    query_prefix: ""
+
+  multilingual_e5_large:
+    model_id: intfloat/multilingual-e5-large
+    dimension: 1024
+    max_tokens: 514
+    normalize: true
+    query_prefix: "query: "

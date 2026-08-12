@@ -1,0 +1,39 @@
+# Chunking strategy registry — consumed by the ingestion pipeline (Phase 4)
+# and benchmarked against each other in Phase 5 (ADR-003).
+default: structure_aware_512
+
+strategies:
+  fixed_256:
+    type: fixed
+    target_tokens: 256
+    overlap_tokens: 32
+    min_tokens: 32
+    max_tokens: 512
+
+  fixed_512:
+    type: fixed
+    target_tokens: 512
+    overlap_tokens: 64
+    min_tokens: 64
+    max_tokens: 1024
+
+  recursive_512:
+    type: recursive
+    target_tokens: 512
+    overlap_tokens: 64
+    min_tokens: 64
+    max_tokens: 1024
+
+  structure_aware_512:
+    type: structure_aware
+    target_tokens: 512
+    overlap_tokens: 64
+    min_tokens: 64
+    max_tokens: 1024
+
+  sentence_window:
+    type: sentence
+    target_tokens: 256
+    overlap_tokens: 0
+    min_tokens: 32
+    max_tokens: 512

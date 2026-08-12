@@ -1,0 +1,42 @@
+[importlinter]
+root_packages =
+    app
+include_external_packages = True
+
+; Layered architecture: a layer may only import from layers below it.
+; Modules separated by | share the same layer.
+[importlinter:contract:layered-architecture]
+name = Layered architecture (docs/ARCHITECTURE.md section 2)
+type = layers
+layers =
+    app.api
+    app.services | app.workers
+    app.ingestion | app.retrieval | app.generation | app.evaluation
+    app.llm | app.embeddings | app.reranking
+    app.repositories | app.models | app.schemas
+    app.observability | app.core | app.utils
+
+[importlinter:contract:qdrant-isolation]
+name = Only repositories may import the Qdrant client
+type = forbidden
+source_modules =
+    app.api
+    app.services
+    app.workers
+    app.ingestion
+    app.retrieval
+    app.generation
+forbidden_modules =
+    qdrant_client
+
+[importlinter:contract:redis-isolation]
+name = Only repositories may import the Redis client
+type = forbidden
+source_modules =
+    app.api
+    app.services
+    app.workers
+    app.retrieval
+    app.generation
+forbidden_modules =
+    redis
