@@ -1,5 +1,6 @@
 # Embedding model registry — consumed via app/embeddings/registry.py (ADR-002).
 # `default` must be a key in `models`. Selected at runtime via EMBEDDING__DEFAULT_MODEL.
+# model_version is stamped on every embedding run (Phase 6 requirement).
 default: bge_m3
 
 models:
@@ -9,6 +10,7 @@ models:
     max_tokens: 8192
     normalize: true
     query_prefix: ""
+    model_version: "1"
 
   bge_base_en_v1_5:
     model_id: BAAI/bge-base-en-v1.5
@@ -16,6 +18,7 @@ models:
     max_tokens: 512
     normalize: true
     query_prefix: ""
+    model_version: "1"
 
   multilingual_e5_large:
     model_id: intfloat/multilingual-e5-large
@@ -23,3 +26,14 @@ models:
     max_tokens: 514
     normalize: true
     query_prefix: "query: "
+    model_version: "1"
+
+  # Deterministic test double for CI/dev — exercises the full pipeline with
+  # zero model downloads. Never the production default.
+  hash_64:
+    model_id: hash
+    dimension: 64
+    max_tokens: 8192
+    normalize: true
+    query_prefix: ""
+    model_version: "1"

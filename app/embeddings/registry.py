@@ -2,7 +2,9 @@
 
 Models are configuration, not code: each entry declares everything the
 embedding pipeline needs (dimension, token budget, normalization, query
-prefix). Changing the default model is an env-var change, not a code change.
+prefix, VERSION). Changing the default model is an env-var change, not a
+code change. model_version is stamped onto every vector-producing run so
+index rebuilds are always traceable (Phase 6 requirement).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ class EmbeddingModelConfig(BaseModel):
     max_tokens: int = Field(gt=0)
     normalize: bool = True
     query_prefix: str = ""
+    model_version: str = "1"
 
 
 class EmbeddingRegistry(BaseModel):
