@@ -33,3 +33,17 @@ def test_request_id_generated(client: TestClient) -> None:
 def test_request_id_propagated(client: TestClient) -> None:
     resp = client.get("/healthz", headers={"X-Request-ID": "test-rid-123"})
     assert resp.headers["X-Request-ID"] == "test-rid-123"
+
+def test_health_v1_shape(client: TestClient) -> None:
+    resp = client.get("/api/v1/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["service"] == "rag-knowledge-platform"
+    assert body["environment"] == "test"
+    assert set(body["checks"]) == {"postgres", "redis", "qdrant"}
+    # PostgreSQL + Qdrant are probed for real now: healthy when the local
+    # service is up, unavailable otherwise. Both are valid test outcomes.
+    assert body["checks"]["postgres"]["status"] in {"healthy", "unavailable"}
+    assert body["checks"]["qdrant"]["status"] in {"healthy", "unavailable"}
+    assert body["checks"]["redis"]["status"] == "not_configured"

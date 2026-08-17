@@ -59,3 +59,9 @@ test-integration: ## Integration tests (requires: docker compose up -d postgres)
 
 experiments-chunking: ## Run Phase 5 chunking experiments (writes docs/chunking-experiments.md)
 	$(VENV)/bin/python scripts/run_chunking_experiments.py
+collection-info: ## Show Qdrant collection status for the default embedding model
+	$(VENV)/bin/python scripts/manage_collection.py info
+benchmark-retrieval: ## Run Phase 8 retrieval benchmark (writes docs/retrieval-benchmarks.md)
+	$(VENV)/bin/python scripts/run_retrieval_benchmark.py
+benchmark-reranking: ## Run Phase 9 reranking benchmark (writes docs/reranking-experiments.md)
+	$(VENV)/bin/python scripts/run_reranking_benchmark.py

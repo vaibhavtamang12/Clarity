@@ -1,0 +1,19 @@
+# configs/rerankers.yaml
+# Reranker registry (ADR-004). Selected at runtime via RERANKER__MODEL.
+default: bge_reranker_v2_m3
+
+models:
+  bge_reranker_v2_m3:
+    model_id: BAAI/bge-reranker-v2-m3
+    batch_size: 16
+    description: Production default — multilingual cross-encoder aligned with bge-m3
+
+  ms_marco_mini:
+    model_id: cross-encoder/ms-marco-MiniLM-L-6-v2
+    batch_size: 64
+    description: Fast English-only profile for latency-sensitive comparisons
+
+  hash:
+    model_id: hash
+    batch_size: 16
+    description: Deterministic token-overlap double for CI/dev — not for production quality

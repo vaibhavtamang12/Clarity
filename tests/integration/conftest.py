@@ -64,3 +64,29 @@ async def database(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Database]:
     yield db
     await db.dispose()
     get_settings.cache_clear()
+
+@pytest_asyncio.fixture()
+async def qdrant_repo():
+    """Real Qdrant repository on a throwaway collection; skips if unreachable."""
+    import asyncio
+    from qdrant_client import AsyncQdrantClient
+
+    from app.core.config import get_settings
+    from app.embeddings.naming import collection_name
+    from app.repositories.vector.qdrant_repository import QdrantVectorRepository
+
+    settings = get_settings()
+    client = AsyncQdrantClient(host=settings.qdrant.host, port=settings.qdrant.port, timeout=5)
+    try:
+        await asyncio.wait_for(client.get_collections(), timeout=3.0)
+    except Exception as exc:  # noqa: BLE001
+        await client.close()
+        pytest.skip(f"Qdrant not reachable for integration tests: {exc}")
+
+    collection = collection_name("test", f"hash_64_{uuid.uuid4().hex[:8]}")
+    repo = QdrantVectorRepository(client, collection)
+    yield repo
+    try:
+        await repo.delete_collection()
+    finally:
+        await client.close()

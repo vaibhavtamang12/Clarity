@@ -110,6 +110,8 @@ class EmbeddingSettings(BaseModel):
     registry_path: str = "configs/embeddings.yaml"
     batch_size: int = 32
     device: str = "cpu"
+    max_retries: int = 2                  # transient inference failures
+    retry_base_delay_seconds: float = 0.5  
 
 
 class RerankerSettings(BaseModel):
@@ -141,6 +143,7 @@ class RetrievalSettings(BaseModel):
     dense_weight: float = 0.7
     sparse_weight: float = 0.3
     degrade_policy: Literal["strict", "degrade"] = "degrade"
+    branch_timeout_seconds: float = 2.0
 
     @field_validator("dense_weight", "sparse_weight")
     @classmethod
@@ -218,6 +221,41 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.app.environment == Environment.PROD
 
+class QueryTransformSettings(BaseModel):
+    enabled: bool = True
+    history_window: int = 3                # conversation turns given to the rewriter
+    rewrite_max_output_tokens: int = 64
+    expansion_min_query_tokens: int = 2    # queries with ≤ this many tokens may expand
+    expansion_max_terms: int = 8
+    decompose_min_tokens: int = 12         # only long queries may decompose
+    temperature: float = 0.1
+    max_output_chars: int = 300
+
+    @field_validator("history_window", "expansion_max_terms")
+    @classmethod
+    def _non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("must be >= 0")
+        return v
+
+class GenerationSettings(BaseModel):
+    max_context_tokens: int = 3000
+    max_answer_tokens: int = 512
+    temperature: float = 0.2
+    max_citations: int = 8
+    repair_attempts: int = 1           # schema-repair retries (ADR-005)
+    fallback_notice: str = (
+        "The answer generator was unavailable. The most relevant retrieved "
+        "passages are provided as citations instead."
+    )
+
+
+# In Settings root, add:
+    generation: GenerationSettings = Field(default_factory=GenerationSettings)
+
+
+# In Settings root, add:
+    query_transform: QueryTransformSettings = Field(default_factory=QueryTransformSettings)
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

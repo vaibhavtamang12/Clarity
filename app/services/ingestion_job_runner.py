@@ -33,11 +33,13 @@ class IngestionJobRunner:
         pipeline: IngestionPipeline,
         file_store: FileStore,
         settings: Settings,
+        indexer: IndexingService | None = None,
     ) -> None:
         self.database = database
         self.pipeline = pipeline
         self.file_store = file_store
         self.settings = settings
+        self.indexer = indexer
 
     async def run_next(self) -> bool:
         """Claim and process one job. Returns False when the queue is empty."""
@@ -59,7 +61,7 @@ class IngestionJobRunner:
                 await self._record_failure(job_id, document_id, exc)
                 return True
 
-    async def _process(self, session, job) -> None:  # type: ignore[no-untyped-def]
+     async def _process(self, session, job) -> None:  # type: ignore[no-untyped-def]
         documents = DocumentRepository(session)
         jobs = IngestionJobRepository(session)
 
@@ -76,6 +78,11 @@ class IngestionJobRunner:
             session=session, document=document, content=content
         )
         job.version_id = result.version_id
+
+        if self.indexer is not None and result.version_id is not None and result.changed:
+            await jobs.update_progress(job, "embedding_indexing", 60)
+            await self.indexer.index_version(session, result.version_id)
+
         await jobs.update_progress(job, "completed", 100)
 
     async def _record_failure(self, job_id, document_id, exc: Exception) -> None:  # type: ignore[no-untyped-def]

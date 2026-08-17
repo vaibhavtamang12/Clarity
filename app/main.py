@@ -26,25 +26,30 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
 
-    # Engine creation is lazy — no connection is opened until first use,
-    # so startup succeeds even if PostgreSQL is still booting.
     database = Database(settings.database)
     await database.initialize()
     app.state.database = database
+
+    # Lazy-connect Qdrant client: construction opens no sockets, so startup
+    # succeeds even while Qdrant is still booting (same posture as Database).
+    qdrant_client = build_qdrant_client(settings.qdrant)
+    app.state.qdrant_client = qdrant_client
+
     logger.info(
         "application_started",
         service=settings.app.name,
         version=settings.app.version,
         environment=settings.app.environment.value,
         database_host=settings.database.host,
+        qdrant_host=settings.qdrant.host,
     )
 
     yield
 
+    await qdrant_client.close()
     await database.dispose()
     logger.info("application_stopped")
-
-
+    
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     setup_logging(level=settings.app.log_level, json_output=settings.app.log_json)

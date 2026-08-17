@@ -119,3 +119,18 @@ class IngestionValidationError(AppError):
 
     code = ErrorCode.INGESTION_VALIDATION
     status_code = 400
+
+# Add class (code RETRIEVAL_UNAVAILABLE already exists):
+class VectorStoreUnavailableError(ExternalServiceError):
+    """Qdrant (or any vector store) failed after retries."""
+
+    code = ErrorCode.RETRIEVAL_UNAVAILABLE
+    status_code = 503
+
+# Add class:
+class RerankerUnavailableError(ExternalServiceError):
+    """Reranker model failed to load or score. Retrieval itself still succeeded,
+    so callers may choose to degrade instead of failing the request (D-049)."""
+
+    code = ErrorCode.RETRIEVAL_UNAVAILABLE
+    status_code = 503
