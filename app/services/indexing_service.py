@@ -57,11 +57,18 @@ def build_payload(
 
 
 class IndexingService:
-    def __init__(self, repository: VectorRepository, embedding_pipeline: EmbeddingPipeline, dimension: int) -> None:
+    def __init__(
+        self,
+        repository: VectorRepository,
+        embedding_pipeline: EmbeddingPipeline,
+        dimension: int,
+        index_state: IndexStateNotifier | None = None,   # Phase 18 addition
+    ) -> None:
         self._repository = repository
         self._embedding = embedding_pipeline
         self._dimension = dimension
-
+        self._index_state = index_state
+    
     async def index_version(self, session: AsyncSession, version_id: uuid.UUID) -> int:
         version = await session.get(DocumentVersion, version_id)
         if version is None:
@@ -69,6 +76,8 @@ class IndexingService:
         document = await session.get(Document, version.document_id)
         if document is None:
             raise DocumentNotFoundError(f"Document {version.document_id} not found")
+        if self._index_state is not None:
+            await self._index_state.bump(self._repository.collection)
 
         # ---- embed (Phase 6 stage) ------------------------------------------
         embedded = await self._embedding.embed_version(session, version_id)
@@ -147,3 +156,5 @@ class IndexingService:
             version_id=str(version_id),
             collection=self._repository.collection,
         )
+        if self._index_state is not None:
+            await self._index_state.bump(self._repository.collection)

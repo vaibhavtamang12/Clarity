@@ -27,6 +27,9 @@ from app.generation.domain import Citation, RAGResponse, RetrievalStats
 from app.generation.generator import RAGGenerator
 from app.repositories.vector.base import VectorFilter
 from app.generation.engine import CitationEngine
+from collections.abc import AsyncIterator
+from app.generation.streaming import StreamingRAGGenerator, StreamChunk
+from app.schemas.streaming import ErrorEvent, MetadataEvent, StatusEvent
 from app.retrieval.base import RetrievalResult, RetrievedChunk, Retriever
 from app.retrieval.query.domain import TransformedQuery, TransformType
 from app.retrieval.query.service import QueryTransformService
@@ -74,6 +77,9 @@ class RAGPipeline:
         self._citation_engine = citation_engine or CitationEngine()
         self._adjudicator = adjudicator
         self._grounding_settings = grounding_settings or GroundingSettings()
+        self._streaming_generator = StreamingRAGGenerator(
+            self._generator._provider, self._settings
+        )
 
     async def answer(
         self,
@@ -226,4 +232,46 @@ class RAGPipeline:
                 regeneration_attempts=regeneration_attempt,
                 context_expanded=context_expanded,
             ) if policy_decision else None,
+    
+    async def answer_stream(
+        self,
+        question: str,
+        history: Sequence[object] = (),
+        filter_: VectorFilter | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Streaming version of answer() — yields SSE events."""
+        query_id = uuid.uuid4()
+        stages: dict[str, float] = {}
+
+        # ---- 1. query transformation ----------------------------------------
+        start = time.perf_counter()
+        if self._transforms is not None:
+            transformed… for c in resolution.citations]),
+            partial=0,
+            unsupported=resolution.dropped_count,
+            total=len(output.citations),
+        )
+
+        # Emit final metadata
+        stages["total_ms"] = round(sum(stages.values()), 2)
+        yield StreamChunk(
+            event_type="metadata",
+            data=MetadataEvent(
+                query_id=query_id,
+                conversation_id=uuid.uuid4(),  # placeholder — real ID from chat service
+                mode="generated",
+                confidence=output.confidence,
+                insufficient_evidence=output.insufficient_evidence,
+                grounding_score=grounding.score,
+                policy_action="accept",
+                retrieval=retrieval_stats.model_dump(),
+                stage_latencies_ms=stages,
+                token_usage=outcome_usage.model_dump(),
+            ),
+        )
+        
+        yield StreamChunk(
+            event_type="status",
+            data=StatusEvent(stage="completed", message="Answer complete"),
+        )
         

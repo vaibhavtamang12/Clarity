@@ -1,7 +1,10 @@
-"""Submission-side orchestration: validation → storage → document/job rows.
+"""Submission-side orchestration: validation → storage → document/job rows →
+queue publish (Phase 19: publish added, fail-open).
 
-This is what the API endpoints (Phase 16) call. Submission is cheap and
-synchronous; the heavy work happens when a worker runs the job.
+Submission is cheap and synchronous; the heavy work happens when a worker
+picks the job up. Publishing is best-effort: if the queue is unreachable,
+the worker's DB sweep still finds the job — correctness never depends on
+the trigger channel.
 """
 
 from __future__ import annotations
@@ -15,8 +18,8 @@ from app.core.config import Settings
 from app.core.exceptions import IngestionValidationError
 from app.core.logging import get_logger
 from app.ingestion.chunking_registry import ChunkingRegistry
-from app.ingestion.idempotency import compute_idempotency_key
 from app.ingestion.domain import sha256_hex
+from app.ingestion.idempotency import compute_idempotency_key
 from app.ingestion.storage import FileStore
 from app.ingestion.url_fetcher import fetch_url
 from app.ingestion.validation import detect_source_type, validate_upload
@@ -24,6 +27,7 @@ from app.models.enums import DocumentSourceType, DocumentStatus
 from app.models.job import IngestionJob
 from app.repositories.document import DocumentRepository
 from app.repositories.job import IngestionJobRepository
+from app.workers.protocols import JobQueue
 
 logger = get_logger(__name__)
 
@@ -41,10 +45,12 @@ class IngestionService:
         file_store: FileStore,
         chunking_registry: ChunkingRegistry,
         settings: Settings,
+        job_queue: JobQueue | None = None,   # Phase 19 addition
     ) -> None:
         self.file_store = file_store
         self.chunking_registry = chunking_registry
         self.settings = settings
+        self._job_queue = job_queue
 
     async def submit_file(
         self,
@@ -69,8 +75,6 @@ class IngestionService:
     async def submit_url(
         self, *, session: AsyncSession, owner_id: uuid.UUID, url: str
     ) -> IngestionJob:
-        # Fetch at submission time: retries replay stored bytes, never re-fetch
-        # (deterministic, and no repeated SSRF exposure — decision D-025).
         fetched = await fetch_url(url, self.settings.ingestion)
         source_type = self._source_type_for_fetch(fetched.content_type, url)
         title = Path(url.rstrip("/")).name or url
@@ -126,6 +130,14 @@ class IngestionService:
         job = await jobs.create(document.id, idempotency_key=idempotency_key)
         await jobs.enqueue(job)
         await session.flush()
+
+        # ---- wake a worker (fail-open: DB sweep is the safety net) ----------
+        if self._job_queue is not None:
+            try:
+                await self._job_queue.publish(job.id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("queue_publish_failed", error=type(exc).__name__)
+
         logger.info(
             "ingestion_submitted",
             job_id=str(job.id),
@@ -145,4 +157,4 @@ class IngestionService:
                 return detect_source_type(f"file{suffix}")
             except IngestionValidationError:
                 pass
-        return DocumentSourceType.HTML  # default assumption for web content
+        return DocumentSourceType.HTML

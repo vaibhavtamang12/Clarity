@@ -216,6 +216,7 @@ class Settings(BaseSettings):
     ingestion: IngestionSettings = Field(default_factory=IngestionSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    worker: WorkerSettings = Field(default_factory=WorkerSettings)
 
     @property
     def is_production(self) -> bool:
@@ -248,6 +249,22 @@ class GenerationSettings(BaseModel):
         "The answer generator was unavailable. The most relevant retrieved "
         "passages are provided as citations instead."
     )
+
+class WorkerSettings(BaseModel):
+    group_name: str = "ingestion-workers"
+    stream_key: str = "queue:ingest"
+    dlq_key: str = "queue:ingest:dlq"
+    block_ms: int = 1000                 # stream read block
+    poll_interval_seconds: float = 2.0   # DB sweep cadence (fallback + safety net)
+    lock_ttl_seconds: int = 600          # per-document lock expiry
+    shutdown_grace_seconds: float = 10.0
+
+    @field_validator("block_ms")
+    @classmethod
+    def _positive_block(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("block_ms must be >= 0")
+        return v
 
 class GroundingSettings(BaseModel):
     poor_grounding_threshold: float = 0.6   # score below this triggers policy action

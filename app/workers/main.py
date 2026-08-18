@@ -1,43 +1,74 @@
-"""Worker entrypoint — PLACEHOLDER.
+"""Worker entrypoint — production implementation (Phase 19).
 
-The real queue consumer (parsing → chunking → embedding → indexing with
-retries and idempotency) lands in Phase 19. This stub keeps
-`docker compose up` fully green from Phase 2 onward.
+Runs the ingestion worker process:
+- Redis stream consumer (competing consumers via consumer groups)
+- PostgreSQL sweep as the safety net / Redis-down mode
+- per-document locks, taxonomy-driven retries, dead-letter queue
+
+Usage:
+    python -m app.workers.main
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import signal
-import time
-from types import FrameType
+import socket
 
+from app.container import build_platform
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
+from app.repositories.database import Database
+from app.repositories.redis_client import build_redis_client
+from app.workers.worker import IngestionWorker
 
-logger = get_logger("worker")
+logger = get_logger("workers.main")
 
 
-def main() -> None:
+async def main() -> None:
     settings = get_settings()
-    setup_logging(level=settings.app.log_level, json_output=settings.app.log_json)
-    logger.info("worker_stub_started", note="real consumer implemented in Phase 19")
+    setup_logging(settings.app.log_level, settings.app.log_json)
 
-    stop = False
+    database = Database(settings.database)
+    await database.initialize()
 
-    def _handle_signal(signum: int, _frame: FrameType | None) -> None:
-        nonlocal stop
-        logger.info("worker_stub_signal_received", signal=signum)
-        stop = True
+    # Redis is optional at runtime: without it the worker degrades to pure
+    # DB polling (D-101 lineage). Correctness is unaffected; wake-up latency
+    # rises to poll_interval_seconds.
+    redis_client = build_redis_client(settings.redis)
+    redis_for_platform = None
+    try:
+        if await redis_client.ping():
+            redis_for_platform = redis_client
+    except Exception:  # noqa: BLE001
+        logger.warning("worker_redis_unavailable_polling_mode")
 
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
+    platform = build_platform(settings, database, redis_client=redis_for_platform)
 
-    while not stop:
-        time.sleep(30)
-        logger.info("worker_stub_heartbeat")
+    consumer_name = f"{socket.gethostname()}-{os.getpid()}"
+    worker = IngestionWorker(
+        runner=platform.job_runner,
+        queue=platform.job_queue,
+        settings=settings.worker,
+        consumer_name=consumer_name,
+    )
 
-    logger.info("worker_stub_stopped")
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, worker.request_stop)
+        except NotImplementedError:  # pragma: no cover — non-unix platforms
+            pass
+
+    try:
+        await worker.run()
+    finally:
+        if redis_for_platform is not None:
+            await redis_client.close()
+        await database.dispose()
+        logger.info("worker_shutdown_complete")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

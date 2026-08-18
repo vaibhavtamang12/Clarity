@@ -13,6 +13,7 @@ from app.core.exceptions import NotFoundError
 from app.repositories.document import DocumentRepository
 from app.repositories.job import IngestionJobRepository
 from app.schemas.jobs import JobStatusResponse
+from app.api.deps import get_platform
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -36,6 +37,7 @@ async def get_job(
         status=job.status.value if hasattr(job.status, "value") else str(job.status),
         attempt_count=job.attempt_count, max_attempts=job.max_attempts,
         error_type=job.error_type, error_message=job.error_message,
-        progress=job.progress or {},
+        progress = dict(job.progress or {})
+        platform = request.app.state.platform if hasattr(request, "app") else None,
         created_at=job.created_at, started_at=job.started_at, completed_at=job.completed_at,
     )

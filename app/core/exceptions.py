@@ -134,3 +134,10 @@ class RerankerUnavailableError(ExternalServiceError):
 
     code = ErrorCode.RETRIEVAL_UNAVAILABLE
     status_code = 503
+
+class ParseError(IngestionError):
+    """Document could not be parsed. Retrying cannot fix malformed content,
+    so the failure taxonomy classifies this as PERMANENT (Phase 19)."""
+
+    code = ErrorCode.INGESTION_FAILED
+    status_code = 500

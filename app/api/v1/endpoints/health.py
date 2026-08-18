@@ -36,6 +36,24 @@ async def _probe_qdrant(client: object) -> ComponentHealth:
     except Exception as exc:  # noqa: BLE001 — health probes never raise
         return ComponentHealth(status="unavailable", detail=type(exc).__name__)
 
+async def _probe_redis(client: object) -> ComponentHealth:
+    start = time.perf_counter()
+    try:
+        async with asyncio.timeout(3.0):
+            await client.ping()  # type: ignore[union-attr]
+        latency_ms = (time.perf_counter() - start) * 1000
+        return ComponentHealth(status="healthy", latency_ms=round(latency_ms, 2))
+    except Exception as exc:  # noqa: BLE001
+        return ComponentHealth(status="unavailable", detail=type(exc).__name__)
+
+# In health():
+    redis_client = getattr(request.app.state, "redis_client", None)
+    redis_check = await _probe_redis(redis_client) if redis_client is not None else _not_configured()
+    checks = {
+        "postgres": postgres_check,
+        "redis": redis_check,
+        "qdrant": qdrant_check,
+    }
 
 @router.get("/health", response_model=HealthResponse)
 async def health(request: Request) -> HealthResponse:

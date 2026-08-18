@@ -279,7 +279,7 @@ class VersioningService:
 
         # ---- vector layer flip + cache-state bump -----------------------------
         await self._indexer.switch_active_version(document_id, version.id)
-        new_state = self._index_state.bump(str(document_id))
+        new_state = await self._index_state.current(self._indexer._repository.collection)
 
         logger.info(
             "version_rollback_completed",

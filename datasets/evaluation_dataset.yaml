@@ -1,0 +1,192 @@
+schema_version: "1.0"
+corpus_version: "eval-corpus-v1"
+created_at: "2026-08-19T00:00:00Z"
+
+metadata:
+  description: "Evaluation dataset for RAG system benchmarking"
+  total_documents: 10
+  target_size: 50+
+
+questions:
+  # ---- SIMPLE FACTUAL (single document, single chunk) ----
+  - id: "q001"
+    category: "simple_factual"
+    difficulty: "easy"
+    question: "What is the refund window for enterprise customers?"
+    evidence:
+      - document: "refund_policy.md"
+        text: "Enterprise customers have a 30-day refund window from the invoice date."
+        section: "Enterprise Refunds"
+    reference_answer: "Enterprise customers can request refunds within 30 days from the invoice date."
+    expected_sources: ["refund_policy.md"]
+    tags: ["refund", "enterprise"]
+
+  - id: "q002"
+    category: "simple_factual"
+    difficulty: "easy"
+    question: "What is the minimum password length requirement?"
+    evidence:
+      - document: "security_policy.md"
+        text: "Passwords must be at least 14 characters long."
+        section: "Password Requirements"
+    reference_answer: "The minimum password length is 14 characters."
+    expected_sources: ["security_policy.md"]
+    tags: ["security", "password"]
+
+  # ---- MULTI-HOP (requires combining 2+ chunks) ----
+  - id: "q010"
+    category: "multi_hop"
+    difficulty: "medium"
+    question: "What is the complete process for requesting an enterprise refund, including approval timeline?"
+    evidence:
+      - document: "refund_policy.md"
+        text: "Enterprise customers have a 30-day refund window from the invoice date."
+        section: "Enterprise Refunds"
+      - document: "refund_policy.md"
+        text: "The finance team approves enterprise refunds within 5 business days."
+        section: "Approval Process"
+    reference_answer: "Enterprise customers can request refunds within 30 days of the invoice date, and the finance team approves valid requests within 5 business days."
+    expected_sources: ["refund_policy.md"]
+    tags: ["refund", "enterprise", "process"]
+
+  - id: "q011"
+    category: "multi_hop"
+    difficulty: "hard"
+    question: "If an employee loses their company laptop, what steps must they take and what is the timeline?"
+    evidence:
+      - document: "security_policy.md"
+        text: "Lost devices must be reported within 4 hours."
+        section: "Device Policy"
+      - document: "incident_response.md"
+        text: "Security incidents must be reported to security@company.com within 1 hour of discovery."
+        section: "Incident Reporting"
+    reference_answer: "The employee must report the lost device within 4 hours per device policy, and security incidents should be reported to security@company.com within 1 hour of discovery."
+    expected_sources: ["security_policy.md", "incident_response.md"]
+    tags: ["security", "incident", "device"]
+
+  # ---- AMBIGUOUS (multiple valid interpretations) ----
+  - id: "q020"
+    category: "ambiguous"
+    difficulty: "medium"
+    question: "How long does it take to get a refund?"
+    evidence:
+      - document: "refund_policy.md"
+        text: "Standard plans have a 14-day refund window from the purchase date."
+        section: "Overview"
+      - document: "refund_policy.md"
+        text: "Enterprise customers have a 30-day refund window from the invoice date."
+        section: "Enterprise Refunds"
+      - document: "refund_policy.md"
+        text: "The finance team approves enterprise refunds within 5 business days."
+        section: "Approval Process"
+    reference_answer: "The refund timeline depends on the plan type: standard plans have a 14-day window from purchase, enterprise plans have a 30-day window from invoice. Approval takes 5 business days for enterprise refunds."
+    expected_sources: ["refund_policy.md"]
+    tags: ["refund", "timeline", "ambiguous"]
+
+  # ---- UNANSWERABLE (no evidence in corpus) ----
+  - id: "q030"
+    category: "unanswerable"
+    difficulty: "medium"
+    question: "What is the company's policy on remote work for international employees?"
+    evidence: []
+    reference_answer: "I don't have enough evidence to answer this question. The available documents do not mention remote work policies for international employees."
+    expected_sources: ["employee_handbook.md"]
+    tags: ["remote", "international", "unanswerable"]
+
+  - id: "q031"
+    category: "unanswerable"
+    difficulty: "easy"
+    question: "What programming language is used for the backend API?"
+    evidence: []
+    reference_answer: "The available documents do not provide information about backend implementation details or programming languages."
+    expected_sources: ["api_reference.md"]
+    tags: ["technical", "unanswerable"]
+
+  # ---- TEMPORAL/VERSION (requires understanding dates/versions) ----
+  - id: "q040"
+    category: "temporal_version"
+    difficulty: "hard"
+    question: "What was the refund policy for enterprise customers before the 2026 update?"
+    evidence:
+      - document: "refund_policy_v1.md"
+        text: "Enterprise customers have a 14-day refund window from the invoice date."
+        section: "Enterprise Refunds"
+    reference_answer: "Before the 2026 update, enterprise customers had a 14-day refund window from the invoice date (compared to the current 30-day window)."
+    expected_sources: ["refund_policy_v1.md"]
+    tags: ["refund", "temporal", "version"]
+
+  - id: "q041"
+    category: "temporal_version"
+    difficulty: "medium"
+    question: "When did the company change the password requirement from 12 to 14 characters?"
+    evidence:
+      - document: "security_policy_changelog.md"
+        text: "2025-Q4: Increased minimum password length from 12 to 14 characters."
+        section: "2025 Changes"
+    reference_answer: "The password requirement was changed from 12 to 14 characters in Q4 2025."
+    expected_sources: ["security_policy_changelog.md"]
+    tags: ["security", "temporal", "changelog"]
+
+  # ---- METADATA-FILTER (requires filtering by source/tags/department) ----
+  - id: "q050"
+    category: "metadata_filter"
+    difficulty: "medium"
+    question: "What security policies apply specifically to the engineering department?"
+    evidence:
+      - document: "security_policy.md"
+        text: "Engineering teams must use hardware security keys for all production access."
+        section: "Department-Specific Rules"
+        tags: ["engineering"]
+    reference_answer: "Engineering teams must use hardware security keys for all production access."
+    expected_sources: ["security_policy.md"]
+    tags: ["security", "engineering", "metadata"]
+
+  - id: "q051"
+    category: "metadata_filter"
+    difficulty: "hard"
+    question: "Show me all refund-related policies from the legal department."
+    evidence:
+      - document: "refund_policy.md"
+        text: "This policy describes when and how refunds are issued for all subscription plans."
+        section: "Overview"
+        tags: ["legal", "refund"]
+    reference_answer: "The refund policy document from the legal department describes refund procedures for all subscription plans."
+    expected_sources: ["refund_policy.md"]
+    tags: ["refund", "legal", "metadata"]
+
+  # ---- Additional simple factual to round out the sample ----
+  - id: "q060"
+    category: "simple_factual"
+    difficulty: "easy"
+    question: "What is the API rate limit per minute?"
+    evidence:
+      - document: "api_reference.md"
+        text: "Each API key is limited to 60 requests per minute."
+        section: "Rate Limits"
+    reference_answer: "The API rate limit is 60 requests per minute per API key."
+    expected_sources: ["api_reference.md"]
+    tags: ["api", "rate-limit"]
+
+  - id: "q061"
+    category: "simple_factual"
+    difficulty: "easy"
+    question: "How long are system logs retained?"
+    evidence:
+      - document: "security_policy.md"
+        text: "System logs are retained for 365 days."
+        section: "Data Retention"
+    reference_answer: "System logs are retained for 365 days."
+    expected_sources: ["security_policy.md"]
+    tags: ["security", "logs", "retention"]
+
+  - id: "q062"
+    category: "simple_factual"
+    difficulty: "easy"
+    question: "What equipment options are available for new hires?"
+    evidence:
+      - document: "onboarding_guide.md"
+        text: "New hires choose between a MacBook or a ThinkPad. A monitor stipend of 300 dollars is provided for home office setup."
+        section: "Equipment"
+    reference_answer: "New hires can choose between a MacBook or a ThinkPad, and receive a 300-dollar monitor stipend for home office setup."
+    expected_sources: ["onboarding_guide.md"]
+    tags: ["onboarding", "equipment"]

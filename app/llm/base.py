@@ -1,12 +1,8 @@
-"""LLM provider abstraction (ADR-005, partially realized — D-055).
-
-The protocol every provider implements. Request/response are Pydantic models
-so token accounting and validation are structural, not aspirational.
-Phase 10 consumes generate(); Phase 17 adds stream() to the same protocol.
-"""
+"""LLM provider abstraction with streaming support (Phase 17)."""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -41,8 +37,23 @@ class LLMResponse(BaseModel):
     latency_ms: float = 0.0
 
 
+class StreamEvent(BaseModel):
+    """A single streaming event from the LLM provider."""
+    
+    token: str | None = None              # incremental token
+    done: bool = False                    # True when generation complete
+    usage: TokenUsage | None = None       # final usage (only when done=True)
+    model: str | None = None
+    error: str | None = None              # error message if generation failed
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     name: str
 
     async def generate(self, request: LLMRequest) -> LLMResponse: ...
+    
+    async def stream(self, request: LLMRequest) -> AsyncIterator[StreamEvent]:
+        """Stream tokens incrementally. Yields StreamEvent with token content,
+        then a final event with done=True and usage stats."""
+        ...

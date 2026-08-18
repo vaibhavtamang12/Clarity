@@ -94,8 +94,8 @@ class IngestionPipeline:
         parser = self.parsers.get(document.source_type)
         try:
             parsed = parser.parse(content, source_uri=document.source_uri or "")
-        except Exception as exc:  # noqa: BLE001 — normalize to IngestionError for job retries
-            raise IngestionError(
+        except Exception as exc:  # noqa: BLE001 — typed permanent failure (Phase 19 taxonomy)
+            raise ParseError(
                 f"Parsing failed for document {document.id}: {type(exc).__name__}"
             ) from exc
 

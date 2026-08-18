@@ -15,6 +15,7 @@ from app.container import build_platform
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger, setup_logging
 from app.repositories.database import Database
+from app.repositories.redis_client import build_redis_client
 from app.repositories.vector.qdrant_client import build_qdrant_client
 
 logger = get_logger(__name__)
@@ -53,6 +54,24 @@ def create_app(
         app.state.qdrant_client = qdrant_client
 
         app.state.platform = factory(settings, database, qdrant_client)
+
+        redis_client = build_redis_client(settings.redis)
+        app.state.redis_client = redis_client
+
+        # Probe once: platform gets Redis-backed stores only when Redis is up.
+        # Fail-open (D-101): a down Redis degrades caching/limits, never startup.
+        redis_for_platform = None
+        try:
+            if await redis_client.ping():
+                redis_for_platform = redis_client
+        except Exception:  # noqa: BLE001
+            logger.warning("redis_unavailable_using_in_memory_fallbacks")
+
+        app.state.platform = factory(settings, database, qdrant_client, redis_for_platform)
+
+        await redis_client.close()
+        await qdrant_client.close()
+        await database.dispose()
 
         logger.info(
             "application_started",

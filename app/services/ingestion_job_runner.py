@@ -1,25 +1,39 @@
-"""Executes ingestion jobs: claim → run pipeline → complete / retry / fail.
+"""Executes ingestion jobs: claim → lock → run → complete / retry / fail.
 
-The Phase 19 worker process will simply loop over run_next() and listen to
-the Redis stream; the execution semantics live here and are tested now.
+Phase 19 execution model — two entry paths share one execution core:
+- run_next():            DB polling sweep (authoritative; fallback + tests)
+- run_specific(job_id):  stream-triggered execution (locked claim by id)
 
-Retry policy: exponential backoff with jitter, max_attempts from settings.
-After a failure the transaction is rolled back (job returns to QUEUED) and
-a fresh transaction records the attempt + next_retry_at — no partial state.
+Failure handling is taxonomy-driven (app/workers/failures.py):
+- PERMANENT errors fail fast — no wasted retries — and go to the DLQ
+- TRANSIENT errors retry with exponential backoff + jitter
+- exhausted jobs are FAILED in PostgreSQL and mirrored to the DLQ
+
+The document lock wraps processing: if another worker holds the document,
+the claim is released back to QUEUED and the sweep retries later. No
+starvation, no concurrent processing.
 """
 
 from __future__ import annotations
 
-import random
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import select
 
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.ingestion.pipeline import IngestionPipeline
 from app.ingestion.storage import FileStore
+from app.models.enums import DocumentStatus, JobStatus, JobType
+from app.models.job import IngestionJob
 from app.repositories.database import Database
-from app.models.enums import DocumentStatus, JobType
 from app.repositories.document import DocumentRepository, DocumentVersionRepository
 from app.repositories.job import IngestionJobRepository
+from app.services.indexing_service import IndexingService
+from app.services.job_state import JobStateStore
+from app.workers.failures import FailureClass, classify_error, decide_retry
+from app.workers.protocols import DeadLetterSink, DocumentLockManager
 
 logger = get_logger(__name__)
 
@@ -34,34 +48,81 @@ class IngestionJobRunner:
         file_store: FileStore,
         settings: Settings,
         indexer: IndexingService | None = None,
+        job_state_store: JobStateStore | None = None,
+        locks: DocumentLockManager | None = None,          # Phase 19
+        dlq: DeadLetterSink | None = None,                 # Phase 19
     ) -> None:
         self.database = database
         self.pipeline = pipeline
         self.file_store = file_store
         self.settings = settings
         self.indexer = indexer
+        self.job_state_store = job_state_store
+        self.locks = locks
+        self.dlq = dlq
 
+    # ------------------------------------------------------------ entry paths
     async def run_next(self) -> bool:
-        """Claim and process one job. Returns False when the queue is empty."""
+        """Claim and process the next due job from PostgreSQL (sweep path)."""
         async with self.database.session() as session:
             jobs = IngestionJobRepository(session)
             job = await jobs.claim_next()
             if job is None:
                 return False
-            document_id = job.document_id
-            job_id = job.id
-            try:
-                await self._process(session, job)
-                await jobs.mark_completed(job)
-                await session.commit()
-                logger.info("job_completed", job_id=str(job_id))
-                return True
-            except Exception as exc:  # noqa: BLE001 — job failures are data, not crashes
-                await session.rollback()
-                await self._record_failure(job_id, document_id, exc)
-                return True
+            await self._execute_in_session(session, jobs, job)
+            return True
 
-    async def _process(self, session, job) -> None:  # type: ignore[no-untyped-def]
+    async def run_specific(self, job_id: uuid.UUID) -> bool:
+        """Process one job by id (stream path). Idempotent: jobs that are
+        already claimed/completed/cancelled are skipped, which makes
+        at-least-once redelivery safe."""
+        async with self.database.session() as session:
+            jobs = IngestionJobRepository(session)
+            result = await session.execute(
+                select(IngestionJob)
+                .where(IngestionJob.id == job_id, IngestionJob.status == JobStatus.QUEUED)
+                .with_for_update(skip_locked=True)
+            )
+            job = result.scalar_one_or_none()
+            if job is None:
+                return False  # not claimable → duplicate delivery or terminal state
+            job.status = JobStatus.PROCESSING
+            job.started_at = datetime.now(timezone.utc)
+            await session.flush()
+            await self._execute_in_session(session, jobs, job)
+            return True
+
+    # ----------------------------------------------------------- execution core
+    async def _execute_in_session(
+        self, session, jobs: IngestionJobRepository, job: IngestionJob  # type: ignore[no-untyped-def]
+    ) -> None:
+        lock_token: str | None = None
+        document_id_str = str(job.document_id)
+
+        if self.locks is not None:
+            lock_token = await self.locks.try_acquire(document_id_str)
+            if lock_token is None:
+                # Another worker owns this document right now: release the claim
+                # and let the sweep retry. No starvation, no concurrency.
+                job.status = JobStatus.QUEUED
+                job.started_at = None
+                await session.commit()
+                logger.info("job_deferred_document_busy", job_id=str(job.id))
+                return
+
+        try:
+            await self._process(session, job)
+            await jobs.mark_completed(job)
+            await session.commit()
+            logger.info("job_completed", job_id=str(job.id))
+        except Exception as exc:  # noqa: BLE001 — failures are data, not crashes
+            await session.rollback()
+            await self._record_failure(job.id, job.document_id, exc)
+        finally:
+            if self.locks is not None and lock_token is not None:
+                await self.locks.release(document_id_str, lock_token)
+
+    async def _process(self, session, job: IngestionJob) -> None:  # type: ignore[no-untyped-def]
         documents = DocumentRepository(session)
         jobs = IngestionJobRepository(session)
 
@@ -71,7 +132,7 @@ class IngestionJobRunner:
 
         job_type = job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type)
 
-        # ---- REINDEX: re-embed + re-upsert the active version (D-087) --------
+        # ---- REINDEX: re-embed + re-upsert the active version ---------------
         if job_type == JobType.REINDEX.value:
             if self.indexer is None:
                 raise ValueError("Indexer not configured — cannot reindex")
@@ -83,7 +144,7 @@ class IngestionJobRunner:
             await jobs.update_progress(job, "completed", 100)
             return
 
-        # ---- INGEST (existing path) -------------------------------------------
+        # ---- INGEST ------------------------------------------------------------
         await jobs.update_progress(job, "parsing", 10)
         content = self.file_store.load(str(document.id))
         document.status = DocumentStatus.PROCESSING
@@ -100,27 +161,80 @@ class IngestionJobRunner:
 
         await jobs.update_progress(job, "completed", 100)
 
-    async def _record_failure(self, job_id, document_id, exc: Exception) -> None:  # type: ignore[no-untyped-def]
-        attempt_delay = self.settings.ingestion.retry_base_delay_seconds
+    # ----------------------------------------------------------- failure paths
+    async def _record_failure(
+        self, job_id: uuid.UUID, document_id: uuid.UUID, exc: Exception
+    ) -> None:
+        failure_class = classify_error(exc)
+        error_type = type(exc).__name__
+        error_message = str(exc)[:_MAX_STORED_ERROR_CHARS]
+
         async with self.database.session() as session:
             jobs = IngestionJobRepository(session)
             documents = DocumentRepository(session)
             job = await jobs.get_by_id(job_id)
             if job is None:
                 return
-            delay = attempt_delay * (2 ** job.attempt_count) + random.uniform(0.0, 1.0)
-            await jobs.mark_failed(
-                job,
-                error_type=type(exc).__name__,
-                error_message=str(exc)[:_MAX_STORED_ERROR_CHARS],
-                retry_delay_seconds=delay,
-            )
-            if job.status.value == "failed":  # retries exhausted
+
+            if failure_class == FailureClass.PERMANENT:
+                # Retrying malformed content wastes compute and delays the queue.
+                job.attempt_count += 1
+                job.status = JobStatus.FAILED
+                job.error_type = error_type
+                job.error_message = error_message
+                job.completed_at = datetime.now(timezone.utc)
                 await documents.update_status(document_id, DocumentStatus.FAILED)
+                await session.commit()
+                logger.warning(
+                    "job_failed_permanent",
+                    job_id=str(job_id),
+                    error_type=error_type,
+                )
+                await self._send_dlq(job_id, error_type, error_message, "permanent_error")
+                return
+
+            decision = decide_retry(
+                attempt_count=job.attempt_count,
+                max_attempts=job.max_attempts,
+                base_delay_seconds=self.settings.ingestion.retry_base_delay_seconds,
+            )
+            if decision.should_retry:
+                await jobs.mark_failed(
+                    job,
+                    error_type=error_type,
+                    error_message=error_message,
+                    retry_delay_seconds=decision.delay_seconds,
+                )
+                await session.commit()
+                logger.warning(
+                    "job_failed_will_retry",
+                    job_id=str(job_id),
+                    error_type=error_type,
+                    attempt=job.attempt_count,
+                    retry_in_seconds=decision.delay_seconds,
+                )
+                return
+
+            # Transient but exhausted → terminal failure + DLQ.
+            await jobs.mark_failed(
+                job, error_type=error_type, error_message=error_message
+            )
+            await documents.update_status(document_id, DocumentStatus.FAILED)
             await session.commit()
-        logger.warning(
-            "job_failed",
-            job_id=str(job_id),
-            error_type=type(exc).__name__,
-            attempt=job.attempt_count,
-        )
+            logger.warning(
+                "job_failed_retries_exhausted",
+                job_id=str(job_id),
+                error_type=error_type,
+                attempts=job.attempt_count,
+            )
+            await self._send_dlq(job_id, error_type, error_message, "retries_exhausted")
+
+    async def _send_dlq(
+        self, job_id: uuid.UUID, error_type: str, error_message: str, reason: str
+    ) -> None:
+        if self.dlq is None:
+            return
+        try:
+            await self.dlq.send_dead_letter(job_id, error_type, error_message, reason)
+        except Exception as exc:  # noqa: BLE001 — DLQ failure must not mask job state
+            logger.warning("dlq_write_failed", error=type(exc).__name__)
