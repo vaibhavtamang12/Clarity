@@ -26,9 +26,19 @@ from app.generation.context import ContextBuilder
 from app.generation.domain import Citation, RAGResponse, RetrievalStats
 from app.generation.generator import RAGGenerator
 from app.repositories.vector.base import VectorFilter
+from app.generation.engine import CitationEngine
 from app.retrieval.base import RetrievalResult, RetrievedChunk, Retriever
 from app.retrieval.query.domain import TransformedQuery, TransformType
 from app.retrieval.query.service import QueryTransformService
+from app.generation.adjudicator import ClaimAdjudicator
+from app.generation.grounding import (
+    GroundingScore,
+    PolicyAction,
+    compute_grounding_score,
+    decide_action,
+)
+from app.generation.prompts import build_strict_user_message
+
 
 logger = get_logger(__name__)
 
@@ -51,12 +61,19 @@ class RAGPipeline:
         context_builder: ContextBuilder,
         settings: GenerationSettings,
         transform_service: QueryTransformService | None = None,
+        citation_engine: CitationEngine | None = None,
+        adjudicator: ClaimAdjudicator | None = None,      # Phase 13 addition
+        grounding_settings: GroundingSettings | None = None,
     ) -> None:
         self._retriever = retriever
         self._generator = generator
         self._context_builder = context_builder
         self._settings = settings
         self._transforms = transform_service
+        ...
+        self._citation_engine = citation_engine or CitationEngine()
+        self._adjudicator = adjudicator
+        self._grounding_settings = grounding_settings or GroundingSettings()
 
     async def answer(
         self,
@@ -150,6 +167,7 @@ class RAGPipeline:
         resolution = resolve_citations(
             output.citations, pack, self._settings.max_citations
         )
+        validation = self._citation_engine.validate(output.answer, resolution, pack)
         stages["total_ms"] = round(sum(stages.values()), 2)
 
         response = RAGResponse(
@@ -159,7 +177,7 @@ class RAGPipeline:
             transform_type=transformed.transform_type.value,
             mode="generated",
             answer=output.answer,
-            citations=resolution.citations,
+            citations=validation.final_citations,          # validated set, not raw
             confidence=output.confidence,
             insufficient_evidence=output.insufficient_evidence,
             degraded=retrieval_stats.degraded or resolution.dropped_count > 0,
@@ -174,14 +192,38 @@ class RAGPipeline:
             retrieval=retrieval_stats,
             stage_latencies_ms=stages,
             token_usage=outcome.usage,
+            citation_validation=validation,                # Phase 12 addition
         )
-        logger.info(
-            "rag_pipeline_completed",
-            query_id=str(query_id),
-            mode=response.mode,
-            citations=len(response.citations),
-            dropped_citations=resolution.dropped_count,
-            insufficient_evidence=response.insufficient_evidence,
-            total_ms=stages["total_ms"],
-        )
-        return response
+    
+    async def _attempt_answer(
+        self,
+        question: str,
+        transformed: TransformedQuery,
+        pack,                                    # type: ignore[no-untyped-def]
+        retrieval_stats: RetrievalStats,
+        history: Sequence[object],
+        filter_,
+        strict: bool = False,
+    ) -> tuple:                                  # type: ignore[no-untyped-def]
+        # ---- generation (Phase 11) -------------------------------------------
+        start = time.perf_counter…trieval_stats.degraded or validation.dropped_count > 0,
+            degraded_reason=(
+                retrieval_stats.degraded_reason
+                or (
+                    f"{validation.dropped_count} citation(s) failed resolution"
+                    if validation.dropped_count
+                    else None
+                )
+            ),
+            retrieval=retrieval_stats,
+            stage_latencies_ms=stages,
+            token_usage=outcome.usage,
+            citation_validation=validation,
+            grounding=GroundingMetrics(**grounding.__dict__) if grounding else None,
+            grounding_policy=GroundingPolicyDecision(
+                action=policy_decision.action.value,
+                reason=policy_decision.reason,
+                regeneration_attempts=regeneration_attempt,
+                context_expanded=context_expanded,
+            ) if policy_decision else None,
+        

@@ -68,3 +68,22 @@ def parse_generation_output(raw: str) -> LLMGenerationOutput:
         return LLMGenerationOutput.model_validate(data)
     except ValidationError as exc:
         raise ValueError(f"schema violation: {exc}") from exc
+
+# Stricter regeneration prompt used when Phase 13's policy decides to regenerate.
+# Adds explicit instructions: do not make unsupported claims, prefer saying "the
+# evidence does not state" over filling gaps.
+STRICT_USER_TEMPLATE = """Question: {question}
+
+{context}
+
+STRICT RULES (stronger than before):
+- Answer ONLY from the passages above.
+- If any part of your answer is not supported by a passage, DO NOT include it.
+- Prefer explicitly stating "the evidence does not state X" over filling gaps.
+- Every factual statement MUST be cited with a passage number like [1].
+
+Output STRICT JSON only."""
+
+
+def build_strict_user_message(question: str, context_text: str) -> str:
+    return STRICT_USER_TEMPLATE.format(question=question, context=context_text)

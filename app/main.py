@@ -1,56 +1,29 @@
-"""Application entrypoint.
-
-``create_app`` is a factory so tests can build isolated instances with
-overridden settings. The module-level ``app`` is what uvicorn loads.
-"""
+"""Application entrypoint."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import register_exception_handlers
-from app.api.middleware import RequestIDMiddleware
+from app.api.middleware import MetricsMiddleware, RequestIDMiddleware
 from app.api.v1.router import api_v1_router
+from app.container import build_platform
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger, setup_logging
 from app.repositories.database import Database
+from app.repositories.vector.qdrant_client import build_qdrant_client
 
 logger = get_logger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    settings: Settings = app.state.settings
-
-    database = Database(settings.database)
-    await database.initialize()
-    app.state.database = database
-
-    # Lazy-connect Qdrant client: construction opens no sockets, so startup
-    # succeeds even while Qdrant is still booting (same posture as Database).
-    qdrant_client = build_qdrant_client(settings.qdrant)
-    app.state.qdrant_client = qdrant_client
-
-    logger.info(
-        "application_started",
-        service=settings.app.name,
-        version=settings.app.version,
-        environment=settings.app.environment.value,
-        database_host=settings.database.host,
-        qdrant_host=settings.qdrant.host,
-    )
-
-    yield
-
-    await qdrant_client.close()
-    await database.dispose()
-    logger.info("application_stopped")
-    
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    platform_factory: Callable | None = None,   # DI seam for tests (D-083)
+) -> FastAPI:
     settings = settings or get_settings()
     setup_logging(level=settings.app.log_level, json_output=settings.app.log_json)
 
@@ -58,11 +31,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="RAG Knowledge Intelligence Platform",
         version=settings.app.version,
         debug=settings.app.debug,
-        lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.metrics = {
+        "requests_total": 0,
+        "client_errors_total": 0,
+        "server_errors_total": 0,
+    }
+
+    factory = platform_factory or (
+        lambda s, db, qdrant_client=None: build_platform(s, db, qdrant_client=qdrant_client)
+    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        database = Database(settings.database)
+        await database.initialize()
+        app.state.database = database
+
+        qdrant_client = build_qdrant_client(settings.qdrant)
+        app.state.qdrant_client = qdrant_client
+
+        app.state.platform = factory(settings, database, qdrant_client)
+
+        logger.info(
+            "application_started",
+            service=settings.app.name,
+            version=settings.app.version,
+            environment=settings.app.environment.value,
+        )
+        yield
+
+        await qdrant_client.close()
+        await database.dispose()
+        logger.info("application_stopped")
+
+    app.router.lifespan_context = lifespan
 
     app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(MetricsMiddleware)
     if settings.app.cors_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -77,7 +84,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
-        """Liveness probe for orchestrators — no dependencies touched."""
         return {"status": "ok"}
 
     return app

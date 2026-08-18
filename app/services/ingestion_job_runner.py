@@ -16,9 +16,9 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.ingestion.pipeline import IngestionPipeline
 from app.ingestion.storage import FileStore
-from app.models.enums import DocumentStatus
 from app.repositories.database import Database
-from app.repositories.document import DocumentRepository
+from app.models.enums import DocumentStatus, JobType
+from app.repositories.document import DocumentRepository, DocumentVersionRepository
 from app.repositories.job import IngestionJobRepository
 
 logger = get_logger(__name__)
@@ -61,7 +61,7 @@ class IngestionJobRunner:
                 await self._record_failure(job_id, document_id, exc)
                 return True
 
-     async def _process(self, session, job) -> None:  # type: ignore[no-untyped-def]
+    async def _process(self, session, job) -> None:  # type: ignore[no-untyped-def]
         documents = DocumentRepository(session)
         jobs = IngestionJobRepository(session)
 
@@ -69,6 +69,21 @@ class IngestionJobRunner:
         if document is None:
             raise ValueError(f"Document {job.document_id} missing for job {job.id}")
 
+        job_type = job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type)
+
+        # ---- REINDEX: re-embed + re-upsert the active version (D-087) --------
+        if job_type == JobType.REINDEX.value:
+            if self.indexer is None:
+                raise ValueError("Indexer not configured — cannot reindex")
+            await jobs.update_progress(job, "reindexing", 40)
+            active = await DocumentVersionRepository(session).get_active_for_document(document.id)
+            if active is None:
+                raise ValueError(f"No active version to reindex for document {document.id}")
+            await self.indexer.index_version(session, active.id)
+            await jobs.update_progress(job, "completed", 100)
+            return
+
+        # ---- INGEST (existing path) -------------------------------------------
         await jobs.update_progress(job, "parsing", 10)
         content = self.file_store.load(str(document.id))
         document.status = DocumentStatus.PROCESSING

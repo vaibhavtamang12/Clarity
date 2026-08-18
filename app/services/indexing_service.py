@@ -126,3 +126,24 @@ class IndexingService:
             is_active=is_active,
         )
         return len(points)
+    
+    async def switch_active_version(
+        self, document_id: uuid.UUID, version_id: uuid.UUID
+    ) -> None:
+        """Flip is_active_version payload flags WITHOUT re-embedding (D-079).
+
+        Historical vectors are preserved by design (ARCHITECTURE §5.2), so
+        rollback and version switches are O(points) metadata operations.
+        """
+        await self._repository.update_payload_by_filter(
+            VectorFilter(document_id=document_id), {"is_active_version": False}
+        )
+        await self._repository.update_payload_by_filter(
+            VectorFilter(version_id=version_id), {"is_active_version": True}
+        )
+        logger.info(
+            "active_version_switched",
+            document_id=str(document_id),
+            version_id=str(version_id),
+            collection=self._repository.collection,
+        )

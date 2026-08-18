@@ -249,6 +249,30 @@ class GenerationSettings(BaseModel):
         "passages are provided as citations instead."
     )
 
+class GroundingSettings(BaseModel):
+    poor_grounding_threshold: float = 0.6   # score below this triggers policy action
+    max_regeneration_attempts: int = 1        # how many times to regenerate with stricter prompt
+    retrieve_more_context_enabled: bool = True
+    context_expansion_factor: float = 1.5     # 3000 → 4500 tokens on retrieve_more
+    judge_unsupported: bool = True            # send unsupported-with-markers claims to judge
+    max_claim_chars: int = 500
+    max_evidence_chars: int = 2000
+    uncertainty_notice: str = (
+        "The answer below may contain claims not fully supported by the retrieved "
+        "evidence. Please verify against the cited sources before acting on it."
+    )
+
+    @field_validator("poor_grounding_threshold")
+    @classmethod
+    def _threshold_in_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("threshold must be in [0, 1]")
+        return v
+
+
+# In Settings root, add:
+    grounding: GroundingSettings = Field(default_factory=GroundingSettings)
+
 
 # In Settings root, add:
     generation: GenerationSettings = Field(default_factory=GenerationSettings)

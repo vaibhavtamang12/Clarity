@@ -1,9 +1,4 @@
-"""Request-scoped middleware.
-
-RequestIDMiddleware assigns (or propagates) ``X-Request-ID`` for every request
-and binds it into structlog contextvars so all downstream logs are correlatable.
-This is the traceability spine defined in ARCHITECTURE.md section 12.
-"""
+"""Request-scoped middleware."""
 
 from __future__ import annotations
 
@@ -26,9 +21,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         token = request_id_var.set(request_id)
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
-            request_id=request_id,
-            method=request.method,
-            path=request.url.path,
+            request_id=request_id, method=request.method, path=request.url.path,
         )
         try:
             response = await call_next(request)
@@ -36,4 +29,19 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
             request_id_var.reset(token)
             structlog.contextvars.clear_contextvars()
         response.headers[REQUEST_ID_HEADER] = request_id
+        return response
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """Aggregate request counters (Phase 16 minimum; Prometheus in Phase 24)."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        counters = getattr(request.app.state, "metrics", None)
+        if counters is not None:
+            counters["requests_total"] = counters.get("requests_total", 0) + 1
+            if response.status_code >= 500:
+                counters["server_errors_total"] = counters.get("server_errors_total", 0) + 1
+            elif response.status_code >= 400:
+                counters["client_errors_total"] = counters.get("client_errors_total", 0) + 1
         return response

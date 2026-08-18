@@ -139,6 +139,17 @@ class DocumentVersionRepository(BaseRepository[DocumentVersion]):
         version.status = VersionStatus.ACTIVE
         await self.session.flush()
         return version
+    
+    async def get_by_number(
+        self, document_id: uuid.UUID, version_number: int
+    ) -> DocumentVersion | None:
+        result = await self.session.execute(
+            select(DocumentVersion).where(
+                DocumentVersion.document_id == document_id,
+                DocumentVersion.version_number == version_number,
+            )
+        )
+        return result.scalar_one_or_none()
 
 
 class DocumentChunkRepository(BaseRepository[DocumentChunk]):
@@ -169,3 +180,25 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
             .offset(offset)
         )
         return result.scalars().all()
+    
+    async def list_content_hashes_for_version(self, version_id: uuid.UUID) -> list[str]:
+        """Ordered chunk hashes — the input to version diffing (Phase 15)."""
+        result = await self.session.execute(
+            select(DocumentChunk.content_hash)
+            .where(DocumentChunk.version_id == version_id)
+            .order_by(DocumentChunk.chunk_index.asc())
+        )
+        return [h for h in result.scalars().all() if h]
+
+    async def count_not_indexed_for_version(self, version_id: uuid.UUID) -> int:
+        from sqlalchemy import func
+
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(DocumentChunk)
+            .where(
+                DocumentChunk.version_id == version_id,
+                DocumentChunk.is_indexed.is_(False),
+            )
+        )
+        return int(result.scalar_one())
