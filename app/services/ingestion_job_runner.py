@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-
+import time
 from sqlalchemy import select
 
 from app.core.config import Settings
@@ -34,6 +34,8 @@ from app.services.indexing_service import IndexingService
 from app.services.job_state import JobStateStore
 from app.workers.failures import FailureClass, classify_error, decide_retry
 from app.workers.protocols import DeadLetterSink, DocumentLockManager
+from app.observability.instrumentation import instrument_job_outcome
+
 
 logger = get_logger(__name__)
 
@@ -98,26 +100,28 @@ class IngestionJobRunner:
     ) -> None:
         lock_token: str | None = None
         document_id_str = str(job.document_id)
+        job_type = job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type)
 
         if self.locks is not None:
             lock_token = await self.locks.try_acquire(document_id_str)
             if lock_token is None:
-                # Another worker owns this document right now: release the claim
-                # and let the sweep retry. No starvation, no concurrency.
                 job.status = JobStatus.QUEUED
                 job.started_at = None
                 await session.commit()
+                instrument_job_outcome(job_type, "deferred")
                 logger.info("job_deferred_document_busy", job_id=str(job.id))
                 return
 
+        started = time.perf_counter()
         try:
             await self._process(session, job)
             await jobs.mark_completed(job)
             await session.commit()
+            instrument_job_outcome(job_type, "completed", time.perf_counter() - started)
             logger.info("job_completed", job_id=str(job.id))
         except Exception as exc:  # noqa: BLE001 — failures are data, not crashes
             await session.rollback()
-            await self._record_failure(job.id, job.document_id, exc)
+            await self._record_failure(job.id, job.document_id, exc, job_type, started)
         finally:
             if self.locks is not None and lock_token is not None:
                 await self.locks.release(document_id_str, lock_token)
@@ -163,11 +167,19 @@ class IngestionJobRunner:
 
     # ----------------------------------------------------------- failure paths
     async def _record_failure(
-        self, job_id: uuid.UUID, document_id: uuid.UUID, exc: Exception
+        self,
+        job_id: uuid.UUID,
+        document_id: uuid.UUID,
+        exc: Exception,
+        job_type: str = "ingest",
+        started: float | None = None,
     ) -> None:
+        from app.workers.failures import FailureClass, classify_error, decide_retry
+
         failure_class = classify_error(exc)
         error_type = type(exc).__name__
         error_message = str(exc)[:_MAX_STORED_ERROR_CHARS]
+        duration = (time.perf_counter() - started) if started is not None else None
 
         async with self.database.session() as session:
             jobs = IngestionJobRepository(session)
@@ -177,7 +189,6 @@ class IngestionJobRunner:
                 return
 
             if failure_class == FailureClass.PERMANENT:
-                # Retrying malformed content wastes compute and delays the queue.
                 job.attempt_count += 1
                 job.status = JobStatus.FAILED
                 job.error_type = error_type
@@ -185,11 +196,8 @@ class IngestionJobRunner:
                 job.completed_at = datetime.now(timezone.utc)
                 await documents.update_status(document_id, DocumentStatus.FAILED)
                 await session.commit()
-                logger.warning(
-                    "job_failed_permanent",
-                    job_id=str(job_id),
-                    error_type=error_type,
-                )
+                instrument_job_outcome(job_type, "failed", duration)
+                logger.warning("job_failed_permanent", job_id=str(job_id), error_type=error_type)
                 await self._send_dlq(job_id, error_type, error_message, "permanent_error")
                 return
 
@@ -215,12 +223,10 @@ class IngestionJobRunner:
                 )
                 return
 
-            # Transient but exhausted → terminal failure + DLQ.
-            await jobs.mark_failed(
-                job, error_type=error_type, error_message=error_message
-            )
+            await jobs.mark_failed(job, error_type=error_type, error_message=error_message)
             await documents.update_status(document_id, DocumentStatus.FAILED)
             await session.commit()
+            instrument_job_outcome(job_type, "retries_exhausted", duration)
             logger.warning(
                 "job_failed_retries_exhausted",
                 job_id=str(job_id),

@@ -65,3 +65,9 @@ benchmark-retrieval: ## Run Phase 8 retrieval benchmark (writes docs/retrieval-b
 	$(VENV)/bin/python scripts/run_retrieval_benchmark.py
 benchmark-reranking: ## Run Phase 9 reranking benchmark (writes docs/reranking-experiments.md)
 	$(VENV)/bin/python scripts/run_reranking_benchmark.py
+eval-retrieval: ## Run Phase 21 retrieval evaluation (requires postgres + qdrant)
+	$(VENV)/bin/python scripts/run_retrieval_evaluation.py
+eval-generation: ## Run Phase 22 generation evaluation (requires postgres + qdrant + LLM)
+	$(VENV)/bin/python scripts/run_generation_evaluation.py
+bench-latency: ## Run Phase 23 latency and cost benchmark (requires postgres + qdrant + LLM)
+	$(VENV)/bin/python scripts/run_latency_benchmark.py

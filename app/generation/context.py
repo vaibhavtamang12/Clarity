@@ -1,21 +1,27 @@
 """Context selection — token-budgeted, citation-numbered passage assembly.
 
-Selects the highest-ranked chunks that fit the context budget (greedy in
-reranked order), numbers them [1..n], and renders each inside delimited
-<passage> tags carrying citation metadata. Passage content is UNTRUSTED
-data — the framing is structural groundwork for prompt-injection defense
-(D-061, Rule 11; hardened in Phase 25).
+Phase 25 hardening: passage content and attribute values are XML-escaped
+before entering the prompt. A document containing '</passage>' or fake tags
+can no longer break out of the passage structure — the primary structural
+defense against prompt injection (D-137). Suspicious payloads are flagged as
+security events (alerting, never blocking — D-138).
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.ingestion.tokens import HeuristicTokenCounter, TokenCounter
 from app.retrieval.base import RetrievedChunk
+from app.security.audit import record_security_event
+from app.security.injection import (
+    escape_attribute_value,
+    escape_passage_content,
+    scan_for_injection,
+)
 
-_HEADER_TOKEN_OVERHEAD = 12  # conservative allowance for the passage header
+_HEADER_TOKEN_OVERHEAD = 12
 
 
 @dataclass(frozen=True)
@@ -39,22 +45,20 @@ class ContextPack:
         return {p.chunk.chunk_id for p in self.passages}
 
 
-def _escape_attr(value: str) -> str:
-    return value.replace('"', "'")
-
-
 def render_passage(number: int, chunk: RetrievedChunk) -> str:
     attrs = [f'id="{number}"']
     if chunk.source_uri:
-        attrs.append(f'document="{_escape_attr(chunk.source_uri)}"')
+        attrs.append(f'document="{escape_attribute_value(chunk.source_uri)}"')
     if chunk.page_start is not None:
         page = str(chunk.page_start)
         if chunk.page_end is not None and chunk.page_end != chunk.page_start:
             page = f"{chunk.page_start}-{chunk.page_end}"
         attrs.append(f'page="{page}"')
     if chunk.section:
-        attrs.append(f'section="{_escape_attr(chunk.section)}"')
-    return f"<passage {' '.join(attrs)}>\n{chunk.content}\n</passage>"
+        attrs.append(f'section="{escape_attribute_value(chunk.section)}"')
+    # PRIMARY injection defense: escaped content can never close or forge tags.
+    safe_content = escape_passage_content(chunk.content)
+    return f"<passage {' '.join(attrs)}>\n{safe_content}\n</passage>"
 
 
 class ContextBuilder:
@@ -73,12 +77,20 @@ class ContextBuilder:
             if len(passages) >= self._max_passages:
                 dropped += 1
                 continue
+
+            # Defense-in-depth: flag known injection signatures (alert only).
+            scan = scan_for_injection(item.content)
+            if scan.suspicious:
+                record_security_event(
+                    "injection_pattern_detected",
+                    patterns=",".join(scan.patterns_matched),
+                    source=item.source_uri or "unknown",
+                )
+
             content_tokens = self._counter.count(item.content)
             total = content_tokens + _HEADER_TOKEN_OVERHEAD
             if used + total > max_tokens:
                 if not passages:
-                    # Never return empty context when we have something: truncate
-                    # the best chunk to fit the budget.
                     budget_chars = max(0, (max_tokens - _HEADER_TOKEN_OVERHEAD)) * 4
                     item = RetrievedChunk(
                         chunk_id=item.chunk_id, document_id=item.document_id,

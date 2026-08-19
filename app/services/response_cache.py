@@ -1,13 +1,7 @@
-"""RAG response cache (Phase 18, decision D-098).
+"""RAG response cache (Phase 18; Phase 24 adds cache instrumentation).
 
 Key structure (ARCHITECTURE §5.3):
     cache:rag:v1:{index_state}:{query_hash}
-
-- index_state: current value of the collection's state counter. Any version
-  change bumps the counter → keys change → old entries become unreachable
-  and expire naturally. NO explicit invalidation, NO staleness race.
-- query_hash: sha256(question + user_id + filters). Per-user keys mean
-  tenant isolation is preserved by the cache itself (D-100).
 
 Fail-open (D-101): any store failure degrades to "no cache" with a warning.
 """
@@ -20,9 +14,10 @@ from pydantic import ValidationError
 
 from app.core.config import CacheSettings
 from app.core.logging import get_logger
-from app.embeddings.caching import CacheStore, deserialize_vector  # noqa: F401 (store protocol)
+from app.embeddings.caching import CacheStore
 from app.generation.domain import RAGResponse
 from app.ingestion.domain import sha256_hex
+from app.observability.instrumentation import instrument_cache_event
 from app.services.index_state import IndexStateNotifier
 
 logger = get_logger(__name__)
@@ -31,11 +26,6 @@ KEY_PREFIX = "cache:rag:v1"
 
 
 def is_cacheable(response: RAGResponse) -> bool:
-    """Only clean, complete, standalone answers enter the cache.
-
-    Degraded, uncertain, or policy-flagged responses must be regenerated —
-    caching them would freeze a failure in place.
-    """
     if response.mode != "generated":
         return False
     if response.degraded or response.insufficient_evidence:
@@ -75,9 +65,11 @@ class ResponseCache:
                 return None
             return RAGResponse.model_validate_json(raw.decode("utf-8"))
         except (ValidationError, UnicodeDecodeError) as exc:
+            instrument_cache_event("response", "error")
             logger.warning("response_cache_corrupt_entry", error=type(exc).__name__)
             return None
         except Exception as exc:  # noqa: BLE001 — fail-open (D-101)
+            instrument_cache_event("response", "error")
             logger.warning("response_cache_get_failed", error=type(exc).__name__)
             return None
 
@@ -97,5 +89,7 @@ class ResponseCache:
                 response.model_dump_json().encode("utf-8"),
                 self._settings.rag_response_ttl_seconds,
             )
+            instrument_cache_event("response", "put")
         except Exception as exc:  # noqa: BLE001 — fail-open (D-101)
+            instrument_cache_event("response", "error")
             logger.warning("response_cache_put_failed", error=type(exc).__name__)

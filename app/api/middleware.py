@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 
 import structlog
@@ -9,6 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.observability.instrumentation import instrument_http
 from app.observability.context import request_id_var
 
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -33,10 +35,22 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
-    """Aggregate request counters (Phase 16 minimum; Prometheus in Phase 24)."""
+    """HTTP instrumentation: Prometheus metrics + legacy app.state counters.
+
+    Route templates (not raw paths) are used as the endpoint label, so
+    /documents/{id} produces ONE time series regardless of how many
+    documents exist (D-136 cardinality discipline).
+    """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        start = time.perf_counter()
         response = await call_next(request)
+        duration_seconds = time.perf_counter() - start
+
+        route_template = self._route_template(request)
+        instrument_http(request.method, route_template, response.status_code, duration_seconds)
+
+        # Legacy counters kept for the authenticated /metrics/summary view.
         counters = getattr(request.app.state, "metrics", None)
         if counters is not None:
             counters["requests_total"] = counters.get("requests_total", 0) + 1
@@ -45,3 +59,10 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             elif response.status_code >= 400:
                 counters["client_errors_total"] = counters.get("client_errors_total", 0) + 1
         return response
+
+    @staticmethod
+    def _route_template(request: Request) -> str:
+        route = request.scope.get("route")
+        if route is not None and getattr(route, "path", None):
+            return route.path
+        return request.url.path

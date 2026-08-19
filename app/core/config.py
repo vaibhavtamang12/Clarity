@@ -169,6 +169,10 @@ class IngestionSettings(BaseModel):
     max_attempts: int = 3
     retry_base_delay_seconds: float = 2.0
     parser_timeout_seconds: float = 120.0
+    # --- Phase 25 additions (binary safety limits) --------------------------
+    max_pdf_pages: int = 500          # parser DoS protection
+    max_zip_entries: int = 1000       # zip bomb / zip slip protection
+    max_uncompressed_mb: int = 200    # zip bomb protection
 
     @field_validator("max_attempts")
     @classmethod
@@ -182,6 +186,12 @@ class IngestionSettings(BaseModel):
     def _normalized_extensions(cls, v: list[str]) -> list[str]:
         return [ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in v]
 
+    @field_validator("max_pdf_pages", "max_zip_entries", "max_uncompressed_mb")
+    @classmethod
+    def _positive_limits(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("safety limits must be >= 1")
+        return v
 
 class CacheSettings(BaseModel):
     enabled: bool = True

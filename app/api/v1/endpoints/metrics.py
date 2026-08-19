@@ -1,9 +1,14 @@
-# app/api/v1/endpoints/metrics.py
-"""Operational metrics endpoint (JSON now; Prometheus exposition in Phase 24)."""
+"""Metrics endpoints (Phase 24).
+
+- GET /metrics          — Prometheus exposition format, UNAUTHENTICATED
+                          (scrape target; network-level protection in prod, D-135)
+- GET /metrics/summary  — authenticated JSON operational summary
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import Response as RawResponse
 from sqlalchemy import func, select
 
 from app.api.auth import AuthenticatedUser
@@ -11,16 +16,26 @@ from app.api.deps import get_current_user, get_db, get_platform
 from app.models.conversation import Conversation
 from app.models.document import Document, DocumentVersion
 from app.models.job import IngestionJob
+from app.observability.metrics import render_metrics
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
+PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
-@router.get("")
-async def metrics(
+
+@router.get("", include_in_schema=False)
+async def prometheus_metrics() -> RawResponse:
+    """Prometheus scrape endpoint (D-135)."""
+    return RawResponse(content=render_metrics(), media_type=PROMETHEUS_CONTENT_TYPE)
+
+
+@router.get("/summary")
+async def metrics_summary(
     request: Request,
     session=Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
+    """Authenticated operational summary (JSON)."""
     platform = get_platform(request)
     counters = getattr(request.app.state, "metrics", {})
 

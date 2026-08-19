@@ -27,6 +27,8 @@ dependencies = [
     "pymupdf>=1.24",          # PDF parsing: text, layout, font metrics (heading heuristics)
     "python-docx>=1.1",       # DOCX parsing: paragraph styles → heading levels
     "beautifulsoup4>=4.12"
+    # Add to [project] dependencies:
+    "prometheus-client>=0.20",   # Phase 24: Prometheus metric primitives + exposition format
 ]
 
 [project.optional-dependencies]
@@ -96,6 +98,7 @@ markers = [
     "retrieval: retrieval benchmark tests",
     "evaluation: evaluation harness tests",
     "slow: long-running tests",
+    "security: adversarial security test
 ]
 
 # ---------------------------------------------------------------- Coverage
